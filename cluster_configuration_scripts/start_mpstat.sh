@@ -1,0 +1,1 @@
+while [ 1 ] ; do mpstat -P ALL 1 1 | awk 'NF==13{printf "%s%s %s\n",$1,$2,$7}' | awk '!/iowait/{allsum+=$2; alln+=1; if ($2>mx){mx=$2} if ($2!=0){sum+=$2;n+=1} }END{printf "%s,%0.2f,%0.2f,%0.2f\n",$1,mx,sum/n,allsum/alln}' ; done | tee ~/mpstat_log.csv

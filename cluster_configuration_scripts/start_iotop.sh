@@ -1,0 +1,1 @@
+while [ 1 ] ; do sudo iotop -t -b -n 1 -o -P -qqq | awk '{sum[$1]+=$11;n[$1]+=1; pr[$1]=pr[$1]":"$13}END{for (i in sum){printf "%s,%0.2f,%s\n",i,sum[i]/n[i],pr[i]} }' ; sleep 1; done | tee ~/iotop_log.csv

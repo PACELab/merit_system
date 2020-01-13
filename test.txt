@@ -1,0 +1,7 @@
+1
+4 rt-fw
+1 1 0 0
+1 1 1 0
+0 1 1 1
+0 0 1 1
+[{"name":"vClient","state":true,"rehome":false,"host":"cp-1","feasible_actions":[]},{"name":"Router2","state":false,"rehome":true,"host":"cp-2","feasible_actions":["moverebuild","migrate","livemigrate"]},{"name":"Firewall","state":true,"rehome":true,"host":"cp-3","feasible_actions":["migrate","livemigrate"]},{"name":"vServer","state":true,"rehome":false,"host":"cp-5","feasible_actions":[]}]

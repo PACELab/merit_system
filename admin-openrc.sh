@@ -1,0 +1,10 @@
+export OS_PROJECT_DOMAIN_NAME=default
+export OS_USER_DOMAIN_NAME=default
+export OS_PROJECT_NAME=admin
+export OS_TENANT_NAME=admin
+export OS_USERNAME=adminapi
+export OS_PASSWORD=90554977f4738ee481a8
+export OS_AUTH_URL=http://ctl:5000/v3
+export OS_IDENTITY_API_VERSION=3
+export OS_IMAGE_API_VERSION=2
+export OS_AUTH_TYPE=password
