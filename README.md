@@ -3,7 +3,7 @@ The system is designed to work with any platform that supports rehoming actions,
 
 **To start the system execute:**
 
-python rehome.py [CONF_FILE] [MODEL_DIR]
+`python rehome.py [CONF_FILE] [MODEL_DIR]` 
 e.g. `python rehome.py test.txt .`
 
 where `CONF_FILE` is the file containing VNF information, see test.txt as an example.
