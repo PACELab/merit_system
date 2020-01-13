@@ -1,9 +1,12 @@
-Description of Files:
+## MERIT System for rehoming service chains of VNFs deployed with Openstack
+The system is designed to work with any platform that supports rehoming actions, we currently include an orchestration layer for Openstack but it can easily be replaced with another one for a different platform like Kubernetes or Docker as long as an appropriate wrapper class is provided (see ROrc.py - all methods should be available in new wrapper).
 
-1. activate_interfaces.sh: Script to activate the eth1 and eth2 interfaces on the newly migrated VNF
-2. collect_metrics.sh: Script to execute the parsing scripts depending on the action performed and return the output
-3. merit.py: Same as before - just added 'predict_homing_cost' to generate a random number in order to test the different actions
+**To start the system execute:**
 
-Pending items:
-1. Calculation of BW (currently it's just KBin)
-2. Possibly generate different training files for each action as header will be different
+python rehome.py [CONF_FILE] [MODEL_DIR]
+e.g. `python rehome.py test.txt .`
+
+where `CONF_FILE` is the file containing VNF information, see test.txt as an example.
+and `MODEL_DIR` is the directory where sklearn models are present.
+
+Predictive models are included as *.pkl* files, and are readable through both python2 and python3. We currently use python2 for backward compatibility. 
