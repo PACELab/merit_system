@@ -1,0 +1,12 @@
+1
+9 wan
+1 1 0 0 0 0 0 0 0
+1 1 1 0 0 0 0 0 0
+0 1 1 1 0 0 0 0 0
+0 0 1 1 1 0 0 0 0
+0 0 0 1 1 1 1 0 0
+0 0 0 0 1 1 0 1 0
+0 0 0 0 1 0 1 0 1
+0 0 0 0 0 1 0 1 0
+0 0 0 0 0 0 1 0 1
+[{"name":"vClient","state":true,"rehome":false,"host":"cp-1","feasible_actions":[]},{"name":"PGW","state":false,"rehome":false,"host":"cp-5","feasible_actions":[]},{"name":"Firewall","state":true,"rehome":true,"host":"cp-2","feasible_actions":["livemigrate"]},{"name":"IDS","state":false,"rehome":true,"host":"cp-3","feasible_actions":["moverebuild"]},{"name":"Switch","state":true,"rehome":false,"host":"cp-5","feasible_actions":[]},{"name":"ATS","state":true,"rehome":true,"host":"cp-4","feasible_actions":["livemigrate"]},{"name":"FFM","state":false,"rehome":true,"host":"cp-6","feasible_actions":["migrate"]},{"name":"wServer","state":true,"rehome":false,"host":"cp-1","feasible_actions":[]},{"name":"vServer","state":true,"rehome":false,"host":"cp-1","feasible_actions":[]}]

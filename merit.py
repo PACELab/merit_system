@@ -47,7 +47,6 @@ class MERIT:
 	def do_predict(self,action,feature_vec):
 		at_m, at_xscaler, at_yscaler = self.actiontime_model[action] # 3-tuple, list
 		dt_m, dt_xscaler, dt_yscaler = self.downtime_model[action] #
-#		print color.MAGENTA, "Feature vec for action %s"%(action), " is ", feature_vec, color.END
 
 		data = np.array(feature_vec)
 		data = data.reshape(1,-1)
@@ -61,7 +60,7 @@ class MERIT:
 		at_prd = at_yscaler.inverse_transform(at_prd)
 		dt_prd = dt_yscaler.inverse_transform(dt_prd)
 
-		return (at_prd[0], dt_prd[0])
+		return (at_prd[0], max(dt_prd[0],0.1))
 
 	def do_modeling(self,actions,data_files,pref_model):
 		# TODO This code will be a slightly modified version of do_regression from local copy
@@ -136,8 +135,8 @@ class MERIT:
 			DT_preds[vnf] = p_dt
 			print color.GREEN, "Predicted costs: AT=%0.2f\tDT=%0.2f"%(p_at,p_dt), color.END
 			# store in schain as well
-			vnf_schain[vnf].set_feature_vec(vnf, fv)
-			vnf_schain[vnf].add_feature_vec(vnf, [p_at, p_dt])
+			vnf_schain[vnf].set_feature_vec(vnf, vnf_actions[vnf], fv)
+			vnf_schain[vnf].add_feature_vec(vnf, vnf_actions[vnf], [p_at, p_dt])
 
 		# combination rehoming cost is then sum(AT) and max(DT)
 		comb_AT = sum(AT_preds.values())
@@ -150,10 +149,11 @@ class MERIT:
 			for path in paths:
 				path_DT = max([DT_preds[i] for i in path])
 				paths_DT.append(path_DT)
+			print color.DARKCYAN, "\tTwo predicted Downtimes are:", paths_DT, color.END
 			comb_DT.append(sum(paths_DT)/len(paths_DT)) # average DT across chain
 		print color.YELLOW, "Combination costs \n\tAT=%0.2f\tDT="%(comb_AT),comb_DT,color.END
 		# chain rehoming cost is sum(AT)*max(DT)
-		return self.orch.calculate_rehoming_cost(comb_AT,comb_DT) # orchesterator provided generic cost function
+		return (comb_AT,comb_DT,self.orch.calculate_rehoming_cost(comb_AT,comb_DT)) # orchesterator provided generic cost function
 
 	def create_feature_vec(self, vnf_prop, action, other_vnfs_prop, other_actions, vnf_targets):
 		# TODO use predefined configuration feature vec keys to extract the corresponding values from vnf_prop

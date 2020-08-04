@@ -1,11 +1,13 @@
 import json
 import itertools
 from ROrc import ROrc
-import subprocess
+import subprocess, time
 import re
 import collections
 from collections import defaultdict, OrderedDict
 from color import color
+from threading import Lock
+import threading
 
 class Graph:
 	def __init__(self):
@@ -46,33 +48,49 @@ class SChain:
 		self.host_map = {}
 		self.vnfs = {} # contains the features and other meta data for each VM
 		self.vnf_list = [] # list has same order as the adjacency matrix, can be used as ref in graph
-		self.vnf_feature_pred_act = {}
+		self.vnf_feature_pred_act = defaultdict(lambda: defaultdict(list))
+#		print color.UNDERLINE, "PRED ACT Type:",type(self.vnf_feature_pred_act),type(self.vnf_feature_pred_act["KEY"]), color.END
 		for vnf in self.vnf_properties:
 			if "host" in vnf:
 			    self.host_map[vnf['name']] = vnf['host']
 			self.vnfs[vnf['name']] = vnf
 			self.vnf_list.append(vnf['name'])
-			self.vnf_feature_pred_act[vnf['name']] = []
 
 		self.update_host_map(orch) # takes care of updating other props as well
 		self.set_available_actions(['moverebuild','migrate','livemigrate'])
 
-		# in addition to the file, we here need to update the meta data from nova and set all the keys at init
-#		self.vnfs[vnf]['manage-ip-addr'] = data['flat-lan-1-net network']
-		print color.DARKCYAN, self.vnfs, color.END
+		self.chain_lock = Lock()
 
-#			self.get_routes(orch)
+		self.orch = orch
+		self.periodic_runner = {}
+		self.periodic_pause = {}
+		self.metrics = {}
+		for vnf_name in self.vnf_list:
+			if self.vnfs[vnf_name]['rehome']:
+				thread = threading.Thread(target=self.get_metrics_periodic, args= (vnf_name,) )
+				thread.daemon = True
+				self.periodic_runner[vnf_name] = True
+				self.periodic_pause[vnf_name] = False
+				thread.start()
 
+	def contains(self, vnf_name):
+		if vnf_name in self.vnfs:
+			return True
+		else:
+			return False
 
-#			self.g = Graph()
-#			for i in range(len(self.adj_matrix)):
-#				for j in range(len(self.adj_matrix[0])):
-#					if i == j:
-#						continue
-#					if self.adj_matrix[i][j] == 1:
-#						self.g.addEdge(self.vnf_list[i], self.vnf_list[j])
+	def stop_periodic_metric_collection(self, vnf_name):
+		self.periodic_runner[vnf_name] = False
 
-				#self.g.print_graph()
+	def stop_periodic_metric_collection_all(self):
+		for vnf_name in self.periodic_runner:
+			self.stop_periodic_metric_collection(vnf_name)
+
+	def pause_periodic_metric_collection(self, vnf_name):
+		self.periodic_pause[vnf_name] = True
+
+	def resume_periodic_metric_collection(self, vnf_name):
+		self.periodic_pause[vnf_name] = False
 
 	def update_host_map(self, orch):
 		for vnf_name in self.vnf_list:
@@ -94,6 +112,7 @@ class SChain:
 		# read from VM - usedmem
 		gluster = 'cp-1'
 		metric_names = ['avm','avs','tps','rkb','wkb','disk','mem','usedmem','pdrm', 'pdrs', 'pdrmin', 'pdrlow3', 'wssm', 'wssmax', 'mwpm', 'mwpmin', 'wse', 'nwse']
+		self.update_meta_for(vnf_name, orch)
 		avm, avs = orch.get_mpstat_metrics(gluster)
 		metric_values = [avm,avs]
 		io_metrics = orch.get_iostat_metrics(gluster)
@@ -110,20 +129,33 @@ class SChain:
 
 		return dict(zip(metric_names, metric_values))
 
-	def set_feature_vec(self, vnf_name, feat_vec):
-		self.vnf_feature_pred_act[vnf_name] = []
-		self.vnf_feature_pred_act[vnf_name].extend(feat_vec)
+	def get_metrics_periodic(self, vnf_name):
+		while self.periodic_runner[vnf_name]:
+			if not self.periodic_pause[vnf_name]:
+				self.metrics[vnf_name] = self.get_latest_metrics(vnf_name, self.orch)
+			time.sleep(60)
 
-	def add_feature_vec(self, vnf_name, values):
-		self.vnf_feature_pred_act[vnf_name].extend(values)
+	def get_latest_metrics_async(self, vnf_name):
+		if vnf_name in self.metrics:
+			return self.metrics[vnf_name]
+		else:
+			self.metrics[vnf_name] = self.get_latest_metrics(vnf_name,self.orch)
+			return self.metrics[vnf_name]
 
-	def get_feature_pred_act_vector(self, vnf_name):
-		return self.vnf_feature_pred_act[vnf_name]
+	def set_feature_vec(self, vnf_name, action, feat_vec):
+		self.vnf_feature_pred_act[vnf_name][action] = []
+		self.vnf_feature_pred_act[vnf_name][action].extend(feat_vec)
+
+	def add_feature_vec(self, vnf_name, action, values):
+		self.vnf_feature_pred_act[vnf_name][action].extend(values)
+
+	def get_feature_pred_act_vector(self, vnf_name, action):
+		return self.vnf_feature_pred_act[vnf_name][action]
 
 	def get_vnf_prop(self, vnf_name, orch):
 		# return dictionary with all the features and the source host - naming should be consistent with merit.ini
 		# TODO parameterize with merit.ini somehow - maybe pass the merit object
-		vnf_prop = self.get_latest_metrics(vnf_name, orch)
+		vnf_prop = self.get_latest_metrics_async(vnf_name)
 		vnf_prop['vnf_name'] = vnf_name
 		vnf_prop['src_host'] = self.vnfs[vnf_name]['OS-EXT-SRV-ATTR:host']
 		vnf_prop['instance'] = int(self.vnfs[vnf_name]['flavor:ram'])//1000 # instance is in GBs rounded
@@ -148,13 +180,21 @@ class SChain:
 	def get_vnfs_on_hosts(self, hosts):
 		return [vnf_name.encode('ascii') for vnf_name in self.vnf_list if self.host_map[vnf_name] in hosts and self.vnfs[vnf_name]['rehome'] ]
 
+	def get_vnfs_per_host(self, hosts):
+		host_to_vnf = defaultdict(list)
+		for vnf_name in self.vnf_list:
+			if self.host_map[vnf_name] in hosts and self.vnfs[vnf_name]['rehome']:
+				host_to_vnf[self.host_map[vnf_name]].append(vnf_name.encode('ascii'))
+		return host_to_vnf
+
 	def get_client_endpoint(self,orchestrator):
 #		self.vnfs['vClient']['manage-ip-addr'] = orchestrator.get_meta_for("vClient")['flat-lan-1-net network']
 		return self.vnfs['vClient']['manage-ip-addr']
 
 	def get_server_endpoint(self,orchestrator):
 #		self.vnfs['vServer']['manage-ip-addr'] = orchestrator.get_meta_for("vServer")['flat-lan-1-net network']
-		return self.vnfs['vServer']['manage-ip-addr']
+#		return self.vnfs['vServer']['manage-ip-addr']
+		return [self.vnfs['vServer']['mnic-4 network'],self.vnfs['wServer']['mnic-4 network']]
 
 	def get_ip_for(self,vnf,orchestrator):
 		return self.vnfs[vnf]['manage-ip-addr']

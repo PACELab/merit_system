@@ -5,6 +5,7 @@ import csv
 from netaddr import IPNetwork, IPAddress
 from collections import defaultdict
 from color import color
+from threading import Lock
 
 # Class to perform change directory to get size from /var/lib/glance and then restore the previos directory path
 class cd:
@@ -26,6 +27,9 @@ class ROrc:
 		self.total_bw = tot_bw
 		self.host_capacity = {}
 		self.ping_running = {}
+		self.lock = Lock()
+		self.ping_sema = {}
+
 		with open(openrc,'r') as rcf:
 			for line in rcf:
 				toks=line.strip().split()
@@ -107,6 +111,7 @@ class ROrc:
 		target = self.fqdn(target)
 		st = time.time()
 		subprocess.check_output("nova migrate --host %s %s"%(target,vm), shell=True)
+		time.sleep(1)
 		return st
 
 	def do_verify_migrate(self,vm):
@@ -121,7 +126,9 @@ class ROrc:
 		"""
 		target = self.fqdn(target)
 		st = time.time()
+		print "LiveMigration Issued for", vm
 		subprocess.check_output("nova live-migration %s %s"%(vm,target), shell=True)
+		time.sleep(2)
 		return st
 
 	def calculate_rehoming_cost(self, total_AT, chain_DTs):
@@ -131,7 +138,7 @@ class ROrc:
 		try:
 			subprocess.check_output('ssh -i ~/graybox.pem %s "truncate -s 0 collectl.log ; truncate -s 0 iostat_log.csv ; truncate -s 0 mpstat_log.csv"'%(target), shell=True)
 		except subprocess.CalledProcessError as grepexc:
-			print "error code", grepexc.returncode, grepexc.output
+			print "Unable to Truncate logs -- error code", grepexc.returncode, grepexc.output
 
 	def disable_dynamic_ownership(self, hostname):
 		subprocess.check_output("""ssh -i ~/graybox.pem %s "bash config_qemu_0.sh" """%(hostname), shell=True)
@@ -146,11 +153,11 @@ class ROrc:
 		# $10 is KBin and $12 is KBout in collectl.log
 		if fetch=='in':
 			avg_bw = subprocess.check_output("""ssh -i ~/graybox.pem %s "tail collectl.log | awk '{sum+=\$10}END{print sum/NR}'" """%(hostname), shell=True).strip()
-			print color.BLUE,"BW IN usage at %s is %0.2f"%(hostname,float(avg_bw)/125),color.END
+			print color.LIGHTRED,"BW IN usage at %s is %0.2f"%(hostname,float(avg_bw)/125),color.END
 			return self.total_bw - (float(avg_bw)/125)
 		elif fetch=='out':
 			avg_bw = subprocess.check_output("""ssh -i ~/graybox.pem %s "tail collectl.log | awk '{sum+=\$12}END{print sum/NR}'" """%(hostname), shell=True).strip()
-			print color.BLUE,"BW OUT usage at %s is %0.2f"%(hostname,float(avg_bw)/125),color.END
+			print color.LIGHTRED,"BW OUT usage at %s is %0.2f"%(hostname,float(avg_bw)/125),color.END
 			return self.total_bw - (float(avg_bw)/125)
 		else:
 			avg_bw = subprocess.check_output("""ssh -i ~/graybox.pem %s "tail collectl.log | awk '{sumin+=\$10;sumout+=\$12}END{print sumin/NR,sumout/NR}'" """%(hostname), shell=True).strip().split()
@@ -193,10 +200,16 @@ class ROrc:
 
 	def get_pdr_metrics(self, hostname, instance_name):
 		# ssh -i graybox.pem cp-1 "python get_pdr.py instance-00000001" | python parse_profiler.py
-		pdr_mets = subprocess.check_output("""ssh -i ~/graybox.pem %s "python get_pdr.py %s" | python ~/vnf-rehoming/parse_profiler.py """%(hostname, instance_name), shell=True).strip().split()
-		metric_names = ['pdrm', 'pdrs', 'pdrmin', 'pdrlow3', 'wssm', 'wssmax', 'mwpm', 'mwpmin', 'wse', 'nwse']
-		metric_values = [float(i) for i in pdr_mets]
-		return (dict(zip(metric_names, metric_values)), metric_values)
+		try:
+			pdr_mets = subprocess.check_output("""ssh -i ~/graybox.pem %s "python get_pdr.py %s" | python ~/vnf-rehoming/parse_profiler.py """%(hostname, instance_name), shell=True).strip().split()
+			metric_names = ['pdrm', 'pdrs', 'pdrmin', 'pdrlow3', 'wssm', 'wssmax', 'mwpm', 'mwpmin', 'wse', 'nwse']
+			metric_values = [float(i) for i in pdr_mets]
+			return (dict(zip(metric_names, metric_values)), metric_values)
+		except subprocess.CalledProcessError as grepexc:
+			print color.RED,"ERROR in get_pdr_metrics process call",color.END
+			print "error code", grepexc.returncode, grepexc.output
+		except Exception as e:
+			print color.RED,"Error in parsing probably - \n",pdr_mets,"\n",str(e),color.END
 
 	def get_mem(self, vm_ip):
 		mem, used_mem = subprocess.check_output("""ssh -i ~/graybox.pem ubuntu@%s "free -m" | grep Mem | awk '{print $2,$3}' """%(vm_ip), shell=True).strip().split()
@@ -248,112 +261,24 @@ class ROrc:
 		return len(lst)
 
 	def add_routes(self,vm_id,action, schain):
-		print color.MAGENTA, "Setting up networking", color.END
+		print color.MAGENTA, "Setting up networking for chain %s"%(schain.name), color.END
 		if action!='livemigrate':
-			subprocess.check_output("bash ~/vnf-rehoming/setup_chain_networking.sh", shell=True)  # Script to setup chain networking
+			with self.lock:
+				if schain.name == 'rt-fw':
+					subprocess.check_output("bash ~/vnf-rehoming/setup_chain_networking.sh", shell=True)  # Script to setup chain networking
+				elif schain.name == 'wan':
+					subprocess.check_output("bash ~/vnf-rehoming/setup_chain_networking_wan.sh", shell=True)  # Script to setup chain networking
 		return
-
-		# TODO removing this mess for now, fix it later
-		data = self.get_meta_for(vm_id)
-		if action == 'migrate':          # Add the previously fetched routes in case of cold migrate
-			for key, val in schain.vnfs[vm_id]['routes'].items():
-				try:
-					mask = sum(bin(int(x)).count('1') for x in val[1].split('.'))
-					output = subprocess.check_output('ssh -o StrictHostKeyChecking=no -i ~/graybox.pem ubuntu@%s "sudo ip route add %s/%s via %s"'%(schain.vnfs[vm_id]['manage-ip-addr'],key,mask,val[0]), shell=True)
-				except subprocess.CalledProcessError as grepexc:
-					print "error code", grepexc.returncode, grepexc.output
-
-		elif action == 'moverebuild':        # Use the graph built using adjacency list to add routes for all the downstream vnfs. Decide next hope by checking common subnet
-			migrated_old_mnic_ips = []
-			for key, val in schain.vnfs[vm_id].items():
-				if 'mnic' in key:
-					migrated_old_mnic_ips.append(val)
-
-			migrated_new_mnic_ips = []
-			#data = self.get_meta_for(vm_id)
-			for key, val in data.items():
-				if 'mnic' in key:
-					migrated_new_mnic_ips.append(val)
-
-			route_to_update = defaultdict(list)
-			next_hop_dict = defaultdict(str)
-
-			for neighbor in schain.g[vm_id]:     # Neighbors for the vnf from graph
-				max_octet = 0
-				for old_ip in migrated_old_mnic_ips:
-					for key, val in schain.vnfs[neighbor]['routes'].items():
-						if old_ip in val:
-							route_to_update[neighbor].append([key, val])      # Get the neighbors and the routes that need to be updated for each
-
-				for new_ip in migrated_new_mnic_ips:
-					for key, val in schain.vnfs[neighbor].items():
-						if 'mnic' in key:
-							octet = self.find_intersecting_octets(new_ip, val)   # Get the mnic ip for next hop
-							if octet >= max_octet:
-								max_octet = octet
-								next_hop = new_ip
-				next_hop_dict[neighbor] = next_hop
-
-			for key, val in route_to_update.items():     # Iterate through route_to_update dict to remove old route and add the new route
-				for v in val:
-					mask = sum(bin(int(x)).count('1') for x in v[1][1].split('.'))
-					command_del = 'ssh -o StrictHostKeyChecking=no -i ~/graybox.pem ubuntu@%s "sudo ip route del %s/%s"'%(schain.vnfs[key]['manage-ip-addr'], v[0], mask)
-					command_add = 'ssh -o StrictHostKeyChecking=no -i ~/graybox.pem ubuntu@%s "sudo ip route add %s/%s via %s"'%(schain.vnfs[key]['manage-ip-addr'], v[0], mask, next_hop_dict[key])
-					try:
-						output_del = subprocess.check_output(command_del, shell=True)
-						output_add = subprocess.check_output(command_add, shell=True)
-					except subprocess.CalledProcessError as grepexc:
-						print "error code", grepexc.returncode, grepexc.output
-
-			reachable_nodes = schain.g.DFS(vm_id)   # Fetch all nodes reachable from this node using DFS graph traversal to add routes on newly migrated VNF
-
-			dest_to_add = [value for value in reachable_nodes if value not in schain.g[vm_id]]
-
-			for dest in dest_to_add:
-				for neighbor in schain.g[dest]:
-					max_octet = 0
-					for new_ip in migrated_new_mnic_ips:
-						for key, val in schain.vnfs[neighbor].items():
-							if 'mnic' in key:
-								octet = self.find_intersecting_octets(new_ip, val)
-								if octet >= max_octet:
-									max_octet = octet
-									next_hop = val        # Find next hop
-				max_octet_new = 0
-				for k, v in schain.vnfs[vm_id]['routes'].items():
-					if k == 'default':
-						continue
-					for k1, v1 in schain.vnfs[dest].items():
-						if 'mnic' in k1:
-							octet = self.find_intersecting_octets(v1, k)
-							if octet >= max_octet_new:
-								max_octet_new = octet
-								desti = k              # Find destination and subnet
-								subnet = v[1]
-
-			try:
-				subprocess.check_output('sh activate_interface.sh %s'%(data['flat-lan-1-net network']), shell=True)
-			except subprocess.CalledProcessError as grepexc:
-				print "error code", grepexc.returncode, grepexc.output
-
-			mask = sum(bin(int(x)).count('1') for x in subnet.split('.'))
-			command = 'ssh -o StrictHostKeyChecking=no -i ~/graybox.pem ubuntu@%s "sudo ip route add %s/%s via %s"'%(data['flat-lan-1-net network'], desti, mask, next_hop)
-			try:
-				output = subprocess.check_output(command, shell=True)
-			except subprocess.CalledProcessError as grepexc:
-				print "error code", grepexc.returncode, grepexc.output
-
-		if not vm_id is 'vClient' or not vm_id is 'vServer':
-			try:
-				subprocess.check_output('ssh -o StrictHostKeyChecking=no -i ~/graybox.pem ubuntu@%s "sudo sysctl -w net.ipv4.ip_forward=1"'%(data['flat-lan-1-net network']), shell=True)
-			except subprocess.CalledProcessError as grepexc:
-				print "error code", grepexc.returncode, grepexc.output
 
 	def start_ping_in_screen(self,from_vm,to_vm,logfile):
 		from_to = "%s,%s"%(from_vm,to_vm)
 		if from_to in self.ping_running and self.ping_running[from_to]==True:
+			print color.RED, "\tPing already running, incrementing", color.END
+			self.ping_sema[from_to] +=1
 			return
 		else:
+			print "Starting ping from %s to %s"%(from_vm,to_vm)
+			self.ping_sema[from_to] = 1
 			self.ping_running[from_to] = True
 		scp_cmd = 'scp -i ~/graybox.pem ~/vnf-rehoming/run_ping_to.sh ubuntu@%s:~/'%(from_vm)
 		subprocess.check_output(scp_cmd, shell=True)
@@ -362,30 +287,36 @@ class ROrc:
 		try:
 				subprocess.check_output(ping_cmd, shell=True)
 		except subprocess.CalledProcessError as grepexc:
-			print "error code", grepexc.returncode, grepexc.output
+			print "Unable to run ping -- error code", grepexc.returncode, grepexc.output
 
 	def stop_ping_in_screen(self,from_vm,to_vm):
 		from_to = "%s,%s"%(from_vm,to_vm)
+		self.ping_sema[from_to] -= 1
+		if self.ping_sema[from_to]!=0:
+			print color.RED, "\tOther threads still running, not killing ping", color.END
+			return
 		self.ping_running[from_to] = False
-		print color.MAGENTA, "Stopping ping screen", color.END
+		print color.MAGENTA, "Stopping ping screen",from_to, color.END
 		try:
+			# TODO store screen id for future kill, instead of killall
 			subprocess.check_output('ssh -i ~/graybox.pem ubuntu@%s "killall screen"'%(from_vm), shell=True)
 		except subprocess.CalledProcessError as grepexc:
-			print "error code", grepexc.returncode, grepexc.output
+			print "Unable to stop ping -- error code", grepexc.returncode, grepexc.output
 
 	def check_ssh_up(self,vm):
 		try:
 			subprocess.check_output('ssh -q -i ~/graybox.pem ubuntu@%s "ls"'%(vm), shell=True)
 		except subprocess.CalledProcessError as grepexc:
-			print "error code", grepexc.returncode, grepexc.output
+			print "SSH threw error code", grepexc.returncode, grepexc.output
+			print "\t\tVM IP:",vm
 			return False
 		return True
 
-	def check_ping_alive(self,from_vm):
+	def check_ping_alive(self,from_vm, log_file):
 		try:
-			first_check = subprocess.check_output('ssh -i ~/graybox.pem ubuntu@%s "tail -1 ping_log.txt"'%(from_vm), shell=True).strip().split()
+			first_check = subprocess.check_output('ssh -i ~/graybox.pem ubuntu@%s "tail -1 %s"'%(from_vm,log_file), shell=True).strip().split()
 			time.sleep(0.3)
-			second_check = subprocess.check_output('ssh -i ~/graybox.pem ubuntu@%s "tail -1 ping_log.txt"'%(from_vm), shell=True).strip().split()
+			second_check = subprocess.check_output('ssh -i ~/graybox.pem ubuntu@%s "tail -1 %s"'%(from_vm,log_file), shell=True).strip().split()
 
 			ft = first_check[0].strip('[]')
 			st = second_check[0].strip('[]')
@@ -400,22 +331,29 @@ class ROrc:
 					return True
 			return False
 		except subprocess.CalledProcessError as grepexc:
-			print "error code", grepexc.returncode, grepexc.output
+			print color.RED,"Unable to check ping_alive -- error code", grepexc.returncode, grepexc.output,color.END
+		except Exception, e:
+			print color.RED, "Runtime error in check_ping_alive :", str(e), color.END
 
 	def calculate_downtime(self,client,log_file,action):
 		nbr = random.randint(1,20)
 		try:
-				subprocess.check_output("scp -i ~/graybox.pem ubuntu@%s:~/%s ~/temp_%d"%(client,log_file,nbr), shell=True)
+				subprocess.check_output("scp -i ~/graybox.pem ubuntu@%s:~/%s ~/temp_%d ; bash ~/vnf-rehoming/remove_null.sh ~/temp_%d"%(client,log_file,nbr,nbr), shell=True)
 		except subprocess.CalledProcessError as grepexc:
-			print "error code", grepexc.returncode, grepexc.output
+			print "Unable to calculate downtime -- error code", grepexc.returncode, grepexc.output
 
 		parser = 'pinglog_to_downtime.py'
 		res = subprocess.check_output("python ~/vnf-rehoming/%s ~/temp_%s | cut -d ' ' -f 8"%(parser,nbr), shell=True).strip()
 #		res = subprocess.check_output("python ~/vnf-rehoming/%s ~/temp_%s | awk '{print $NF}'"%(parser,client), shell=True).strip()
-		return float(res)
+		try:
+			ret = float(res)
+		except ValueError:
+			print("Error parsing ping parse output", res)
+			return -1
+		return ret
 
 	def get_hypervisor_info(self):
-		hyp_list = subprocess.check_output("openstack hypervisor list | grep QEMU | awk '{print $4}'", shell=True)
+		hyp_list = subprocess.check_output("openstack hypervisor list | grep QEMU | grep -w up | awk '{print $4}'", shell=True)
 		hyp_list = hyp_list.splitlines()
 		for hyp in hyp_list:
 			hyp_info = subprocess.check_output("openstack hypervisor show %s | awk '/local_gb\>/{tot=$4}/local_gb_used/{used=$4}END{print tot-used}'"%(hyp), shell=True)
@@ -428,7 +366,8 @@ class ROrc:
 				return hn
 			elif host_name in hn:
 				return hn
-		raise KeyError('host not found in host_capacity. Are you sure the host name is correct?')
+		print color.RED, 'host not found in host_capacity. Are you sure the host name is correct?', host_name,color.END
+		raise Exception('Incorrect Host Name')
 
 	def get_candidate_hosts(self,vnf_action,hosts_unavailable):
 		"""
@@ -442,6 +381,7 @@ class ROrc:
 		vnf_host={}
 		lmset=[]
 		cmset=[]
+		print "Sorted Host Capacities:",sorted(self.host_capacity.items(), key=lambda x: x[1], reverse=True)
 		for k,v in sorted(self.host_capacity.items(), key=lambda x: x[1], reverse=True):
 			if k in hosts_unavailable or 'cp-1' in k : # TODO use a configuration value instead
 				continue
